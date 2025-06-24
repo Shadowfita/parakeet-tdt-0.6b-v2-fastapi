@@ -16,6 +16,26 @@ MAX_AUDIO_DURATION = int(os.getenv("MAX_AUDIO_DURATION", "30"))   # seconds
 VAD_THRESHOLD = float(os.getenv("VAD_THRESHOLD", "0.5"))
 PROCESSING_TIMEOUT = int(os.getenv("PROCESSING_TIMEOUT", "60"))    # seconds
 
+# Database
+DB_URL = os.getenv("DB_URL", "sqlite:///transcriptions.db")
+
+# Diarization
+HF_TOKEN = os.getenv("HF_TOKEN")
+
+# Task Management
+TASK_CLEANUP_HOURS = int(os.getenv("TASK_CLEANUP_HOURS", "24"))
+MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "10"))
+
+# Audio Processing
+MAX_AUDIO_SIZE_MB = int(os.getenv("MAX_AUDIO_SIZE_MB", "500"))
+
+class Config:
+    DB_URL = DB_URL
+    HF_TOKEN = HF_TOKEN
+    TASK_CLEANUP_HOURS = TASK_CLEANUP_HOURS
+    MAX_CONCURRENT_TASKS = MAX_CONCURRENT_TASKS
+    MAX_AUDIO_SIZE_MB = MAX_AUDIO_SIZE_MB
+
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=LOG_LEVEL,

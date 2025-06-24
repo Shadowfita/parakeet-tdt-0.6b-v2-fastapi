@@ -17,7 +17,10 @@ from fastapi import BackgroundTasks, HTTPException, status
 from .config import TARGET_SR, logger
 
 
-SUPPORTED_EXTS: List[str] = [".wav", ".flac", ".mp3", ".ogg", ".opus"]
+AUDIO_EXTENSIONS = {'.wav', '.aac', '.mp3', '.awb', '.amr', '.oga', '.ogg', '.wma', '.m4a', '.flac', '.opus'}
+VIDEO_EXTENSIONS = {'.mp4', '.mov', '.mkv', '.avi', '.wmv', '.webm'}
+ALLOWED_EXTENSIONS = AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
+SUPPORTED_EXTS: List[str] = list(ALLOWED_EXTENSIONS)
 
 
 def convert_audio_streaming(src: Path) -> Tuple[Path, Path]:
@@ -85,6 +88,43 @@ def ensure_mono_16k_standard(src: Path) -> Tuple[Path, Path]:
     return src, dst
 
 
+def convert_media_to_audio(file_path: Path) -> Path:
+    """Convert video/audio file to WAV format using FFmpeg"""
+    if file_path.suffix.lower() in VIDEO_EXTENSIONS or needs_conversion(file_path):
+        import subprocess
+        import tempfile
+        
+        output = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
+        try:
+            subprocess.run([
+                'ffmpeg', '-y', '-v', 'error', '-nostdin',
+                '-i', str(file_path),
+                '-vn',  # No video
+                '-ac', '1',  # Mono
+                '-ar', '16000',  # 16kHz
+                '-acodec', 'pcm_s16le',
+                '-f', 'wav',
+                output.name
+            ], check=True)
+            return Path(output.name)
+        except subprocess.CalledProcessError as e:
+            logger.error(f"FFmpeg conversion failed: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                detail=f"Failed to convert media file: {e}"
+            )
+    return file_path
+
+
+def needs_conversion(file_path: Path) -> bool:
+    """Check if audio file needs conversion"""
+    try:
+        with sf.SoundFile(file_path) as snd:
+            return snd.samplerate != 16000 or snd.channels != 1
+    except:
+        return True
+
+
 def ensure_mono_16k(src: Path) -> Tuple[Path, Path]:
     """
     Down-mix and resample to mono/16 kHz using streaming when possible.
@@ -92,8 +132,13 @@ def ensure_mono_16k(src: Path) -> Tuple[Path, Path]:
     if src.suffix.lower() not in SUPPORTED_EXTS:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail=f"Unsupported file type {src.suffix}",
+            detail=f"Unsupported file type {src.suffix}. Supported: {', '.join(SUPPORTED_EXTS)}",
         )
+    
+    # Handle video files and complex audio conversions with FFmpeg
+    if src.suffix.lower() in VIDEO_EXTENSIONS:
+        converted_path = convert_media_to_audio(src)
+        return src, converted_path
     
     # For WAV files that are already mono and 16kHz, no conversion needed
     if src.suffix.lower() == ".wav":

@@ -9,3 +9,16 @@ pytest
 python-multipart
 ffmpeg-python
 python-dotenv
+
+# Database
+sqlalchemy>=2.0.0
+alembic>=1.13.0
+
+# Diarization
+pyannote.audio>=3.1.0
+speechbrain>=1.0.0
+
+# Additional
+requests>=2.31.0
+pydub>=0.25.1
+soundfile

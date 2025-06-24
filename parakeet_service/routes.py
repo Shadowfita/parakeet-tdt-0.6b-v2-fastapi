@@ -9,8 +9,9 @@ from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Query, Uplo
 
 from .audio import ensure_mono_16k, schedule_cleanup
 from .model import _to_builtin
-from .schemas import TranscriptionResponse
-from .config import logger
+from .schemas import TranscriptionResponse, DiarizationResponse
+from .config import logger, DEVICE, HF_TOKEN
+from .diarization import DiarizationPipeline, merge_transcription_diarization, DIARIZATION_AVAILABLE
 
 from parakeet_service.model import reset_fast_path
 from parakeet_service.chunker import vad_chunk_lowmem, vad_chunk_streaming
@@ -194,6 +195,167 @@ async def transcribe_audio(
     timestamps  = dict(merged) if include_timestamps else None
 
     return TranscriptionResponse(text=merged_text, timestamps=timestamps)
+
+@router.post(
+    "/transcribe-with-diarization", 
+    response_model=DiarizationResponse,
+    summary="Transcribe audio with speaker diarization"
+)
+async def transcribe_with_diarization(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(..., media_type="audio/*"),
+    include_timestamps: bool = Form(False, description="Return char/word/segment offsets"),
+    min_speakers: int = Form(None, description="Minimum number of speakers"),
+    max_speakers: int = Form(None, description="Maximum number of speakers"),
+):
+    if not DIARIZATION_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Diarization feature not available. Install pyannote.audio to enable."
+        )
+    
+    # Create temp file with appropriate extension
+    suffix = Path(file.filename or "").suffix or ".wav"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp_path = Path(tmp.name)
+    
+    # Save uploaded file
+    try:
+        with open(tmp_path, "wb") as f:
+            while True:
+                chunk = await file.read(8192)
+                if not chunk:
+                    break
+                f.write(chunk)
+    finally:
+        await file.close()
+
+    # Process audio to ensure mono 16kHz
+    original, to_model = ensure_mono_16k(tmp_path)
+    
+    # Transcribe
+    model = request.app.state.asr_model
+    try:
+        outs = model.transcribe(
+            [str(to_model)],
+            batch_size=2,
+            timestamps=include_timestamps,
+        )
+        
+        # Diarize
+        diarization_pipeline = DiarizationPipeline(device=DEVICE, hf_token=HF_TOKEN)
+        speaker_segments = diarization_pipeline.process(
+            str(to_model), 
+            min_speakers=min_speakers,
+            max_speakers=max_speakers
+        )
+        
+    except Exception as exc:
+        logger.exception("Transcription or diarization failed")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc)
+        ) from exc
+    
+    # Clean up
+    schedule_cleanup(background_tasks, original, to_model)
+    
+    # Process results
+    if isinstance(outs, tuple):
+        outs = outs[0]
+    
+    texts = []
+    timestamps = None
+    
+    for h in outs:
+        texts.append(getattr(h, "text", str(h)))
+        if include_timestamps and timestamps is None:
+            timestamps = _to_builtin(getattr(h, "timestamp", {}))
+    
+    merged_text = " ".join(texts).strip()
+    
+    return DiarizationResponse(
+        text=merged_text,
+        timestamps=timestamps,
+        speakers=speaker_segments
+    )
+
+
+@router.post(
+    "/transcribe-url",
+    response_model=TranscriptionResponse,
+    summary="Transcribe audio from URL"
+)
+async def transcribe_from_url(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    url: str = Form(..., description="URL to audio/video file"),
+    include_timestamps: bool = Form(False, description="Return char/word/segment offsets"),
+):
+    import requests
+    from urllib.parse import urlparse
+    
+    try:
+        # Download audio from URL
+        response = requests.get(url, stream=True, timeout=30)
+        response.raise_for_status()
+        
+        # Extract filename from URL or headers
+        filename = Path(urlparse(url).path).name or "audio.wav"
+        
+        # Save to temporary file
+        with tempfile.NamedTemporaryFile(suffix=Path(filename).suffix, delete=False) as tmp:
+            for chunk in response.iter_content(chunk_size=8192):
+                tmp.write(chunk)
+            tmp_path = Path(tmp.name)
+        
+    except requests.RequestException as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to download from URL: {e}"
+        )
+    
+    # Process as normal file
+    original, to_model = ensure_mono_16k(tmp_path)
+    
+    # Transcribe
+    model = request.app.state.asr_model
+    try:
+        outs = model.transcribe(
+            [str(to_model)],
+            batch_size=2,
+            timestamps=include_timestamps,
+        )
+    except RuntimeError as exc:
+        logger.exception("ASR failed")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc)
+        ) from exc
+    
+    # Clean up
+    schedule_cleanup(background_tasks, original, to_model)
+    
+    # Process results
+    if isinstance(outs, tuple):
+        outs = outs[0]
+    
+    texts = []
+    ts_agg = [] if include_timestamps else None
+    merged = defaultdict(list)
+
+    for h in outs:
+        texts.append(getattr(h, "text", str(h)))
+        if include_timestamps:
+            for k, v in _to_builtin(getattr(h, "timestamp", {})).items():
+                merged[k].extend(v)
+
+    merged_text = " ".join(texts).strip()
+    timestamps = dict(merged) if include_timestamps else None
+
+    return TranscriptionResponse(text=merged_text, timestamps=timestamps)
+
 
 @router.get("/debug/cfg")
 def show_cfg(request: Request):
