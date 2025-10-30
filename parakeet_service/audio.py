@@ -12,6 +12,7 @@ import torchaudio
 import torchaudio.functional as AF
 import soundfile as sf
 import numpy as np
+import torch
 from fastapi import BackgroundTasks, HTTPException, status
 
 from .config import TARGET_SR, logger
@@ -43,14 +44,18 @@ def convert_audio_streaming(src: Path) -> Tuple[Path, Path]:
                         break
                     
                     # Convert to mono if needed
-                    if channels > 1:
-                        chunk = np.mean(chunk, axis=1)
-                    
+                    if chunk.ndim == 2:
+                        if chunk.shape[1] > 1:
+                            # Average across channels to obtain mono audio
+                            chunk = np.mean(chunk, axis=1)
+                        else:
+                            chunk = chunk[:, 0]
+
                     # Resample if needed
                     if sr_orig != 16000:
-                        chunk_tensor = torchaudio.tensor(chunk).unsqueeze(0)
-                        chunk = AF.resample(chunk_tensor, sr_orig, 16000)
-                        chunk = chunk.squeeze(0).numpy()
+                        chunk_tensor = torch.from_numpy(chunk).unsqueeze(0)
+                        chunk_resampled = AF.resample(chunk_tensor, sr_orig, 16000)
+                        chunk = chunk_resampled.squeeze(0).numpy()
                     
                     out.write(chunk)
             
