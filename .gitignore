@@ -172,3 +172,13 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Test data (large files)
+test_data/*.tar.gz
+test_data/*.wav
+test_data/LibriSpeech/
+*.flac
+
+# Evaluation results
+results_*.json
+evaluation_results.json
