@@ -197,6 +197,43 @@ H --> A
 8. **`audio.py`** - Audio preprocessing utilities
 9. **`config.py`** - Configuration management
 
+## ASR Accuracy Evaluation
+
+Evaluate ASR performance with WER (Word Error Rate) and CER (Character Error Rate) metrics.
+
+### Quick Start
+
+```bash
+# Install evaluation dependencies
+pip install jiwer tqdm
+
+# Run evaluation on a 2-hour audio file
+python evaluate_asr.py \
+  --audio audio_2hours.wav \
+  --reference reference_text.txt \
+  --chunk-duration 30 \
+  --output results.json
+```
+
+### Features
+
+- **Long audio support**: Automatically chunks audio files (2+ hours supported)
+- **Comprehensive metrics**: WER, CER, word accuracy, character accuracy
+- **Performance metrics**: Real-time factor (RTF) calculation
+- **Detailed reports**: JSON output with full results
+
+### Example Output
+
+```
+📊 Word Error Rate (WER): 5.23%
+📊 Character Error Rate (CER): 2.15%
+✅ Word Accuracy: 94.77%
+✅ Character Accuracy: 97.85%
+🚀 Real-Time Factor (RTF): 0.0501x
+```
+
+For detailed documentation, see [EVALUATION_GUIDE.md](EVALUATION_GUIDE.md).
+
 ## Environment Variables
 
 | Variable | Default | Description |
