@@ -1,0 +1,23 @@
+[
+  {
+    "name": "sample1",
+    "reference_file": "test_data/reference_sample1.txt",
+    "words": 54,
+    "characters": 307,
+    "text_preview": "The quick brown fox jumps over the lazy dog. This is a classic pangram\nused to test keyboards and fo..."
+  },
+  {
+    "name": "sample2",
+    "reference_file": "test_data/reference_sample2.txt",
+    "words": 51,
+    "characters": 383,
+    "text_preview": "Speech recognition technology has advanced significantly in recent years.\nModern systems use deep le..."
+  },
+  {
+    "name": "sample3",
+    "reference_file": "test_data/reference_sample3.txt",
+    "words": 62,
+    "characters": 446,
+    "text_preview": "Artificial intelligence is transforming many industries today. Machine learning\nalgorithms can now p..."
+  }
+]

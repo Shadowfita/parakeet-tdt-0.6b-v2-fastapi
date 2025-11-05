@@ -1,0 +1,121 @@
+
+================================================================================
+DEMO TEST DATA CREATED
+================================================================================
+
+I've created sample reference texts for testing the ASR evaluation pipeline.
+
+OPTION 1: Use Your Own Audio Files
+-----------------------------------
+If you have audio files to test:
+
+1. Place your audio files in the test_data/ directory
+2. Make sure you have corresponding reference text files
+3. Run the evaluation:
+
+   python evaluate_asr.py \
+     --audio test_data/your_audio.wav \
+     --reference test_data/reference_sample1.txt \
+     --output results.json
+
+OPTION 2: Record Audio for the Reference Texts
+-----------------------------------------------
+You can record audio reading the reference texts:
+
+1. Read one of the reference texts:
+   - test_data/reference_sample1.txt
+   - test_data/reference_sample2.txt
+   - test_data/reference_sample3.txt
+
+2. Save the recording as a WAV file in test_data/
+
+3. Run the evaluation
+
+OPTION 3: Use Text-to-Speech (if available)
+--------------------------------------------
+If you have TTS tools available (like espeak, pyttsx3, etc.):
+
+# Example with espeak (if installed)
+espeak -w test_data/audio_sample1.wav -f test_data/reference_sample1.txt
+
+Then evaluate:
+python evaluate_asr.py \
+  --audio test_data/audio_sample1.wav \
+  --reference test_data/reference_sample1.txt \
+  --output results_sample1.json
+
+OPTION 4: Download Audio from Public Sources
+---------------------------------------------
+You can download audio files from:
+
+1. Common Voice: https://commonvoice.mozilla.org/
+   - Download validated audio files
+   - Use the corresponding transcripts
+
+2. YouTube with transcripts:
+   - Download audio from educational videos with captions
+   - Use the captions as reference text
+
+3. Podcasts with transcripts:
+   - Download podcast audio
+   - Use their published transcripts
+
+CREATING A 2-HOUR TEST AUDIO
+-----------------------------
+To create a long test audio (like 2 hours), you can:
+
+1. Combine multiple audio files:
+
+   # Create a file list
+   cat > test_data/long_audio_list.txt << EOF
+   file 'audio1.wav'
+   file 'audio2.wav'
+   file 'audio3.wav'
+   ...
+   EOF
+
+   # Combine with ffmpeg
+   ffmpeg -f concat -safe 0 -i test_data/long_audio_list.txt \
+     -ar 16000 -ac 1 test_data/audio_long_2hours.wav
+
+2. Concatenate the reference texts in the same order
+
+QUICK START FOR TESTING THE PIPELINE
+-------------------------------------
+To test the evaluation pipeline without real data:
+
+1. Create a simple test audio:
+   # Generate a tone (10 seconds)
+   ffmpeg -f lavfi -i "sine=frequency=1000:duration=10" \
+     -ar 16000 -ac 1 test_data/test_tone.wav
+
+2. Create a dummy reference:
+   echo "This is a test audio file" > test_data/test_reference.txt
+
+3. Run the evaluation (it will transcribe the tone, which won't match):
+   python evaluate_asr.py \
+     --audio test_data/test_tone.wav \
+     --reference test_data/test_reference.txt \
+     --output test_results.json
+
+   This tests that the pipeline works end-to-end.
+
+RECOMMENDED APPROACH
+--------------------
+The most practical approach for testing:
+
+1. Find a video or audio with accurate transcripts
+2. Download the audio
+3. Copy the transcript as reference text
+4. Run the evaluation
+
+Example sources:
+- TED Talks (have transcripts)
+- Audiobooks (have text)
+- Educational videos with closed captions
+
+================================================================================
+
+For detailed evaluation documentation, see EVALUATION_GUIDE.md
+
+================================================================================
