@@ -34,6 +34,11 @@ def health():
     response_model=TranscriptionResponse,
     summary="Transcribe an audio file",
 )
+@router.post(
+    "/v1/audio/transcriptions",
+    response_model=TranscriptionResponse,
+    summary="Transcribe an audio file",
+)
 async def transcribe_audio(
     request: Request,
     background_tasks: BackgroundTasks,
