@@ -5,7 +5,8 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-MODEL_NAME = "nvidia/parakeet-tdt-0.6b-v2"  # Keep hardcoded as requested
+# Model Selection
+MODEL_NAME = os.getenv("MODEL_NAME", "nvidia/parakeet-tdt-0.6b-v2")
 
 # Configuration from environment variables
 TARGET_SR = int(os.getenv("TARGET_SR", "16000"))          # model’s native sample-rate
@@ -25,3 +26,8 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger("parakeet_service")
+
+# Helper to check which model is active
+def is_v3_model():
+    """Checks if the configured model is the v3 version."""
+    return "v3" in MODEL_NAME
