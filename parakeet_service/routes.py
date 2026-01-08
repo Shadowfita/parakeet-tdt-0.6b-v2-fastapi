@@ -147,9 +147,12 @@ async def transcribe_audio(
 
     if should_chunk:
         # Use low-memory chunker for non-streaming requests
-      chunk_paths = vad_chunk_lowmem(to_model) or [to_model]
+        chunk_data = vad_chunk_lowmem(to_model) or [(to_model, 0.0)]
     else:
-        chunk_paths = [to_model]
+        chunk_data = [(to_model, 0.0)]
+
+    chunk_paths = [path for path, _ in chunk_data]
+    chunk_offsets = [offset for _, offset in chunk_data]
 
     logger.info("transcribe(): sending %d chunks to ASR", len(chunk_paths))
 
@@ -184,11 +187,34 @@ async def transcribe_audio(
     ts_agg = [] if include_timestamps else None
     merged = defaultdict(list)
 
-    for h in outs:
+    for idx, h in enumerate(outs):
         texts.append(getattr(h, "text", str(h)))
         if include_timestamps:
+            offset = chunk_offsets[idx]
             for k, v in _to_builtin(getattr(h, "timestamp", {})).items():
-                merged[k].extend(v)           # concat lists
+                # Adjust timestamps by adding the chunk offset
+                if isinstance(v, list) and len(v) > 0:
+                    adjusted = []
+                    for item in v:
+                        if isinstance(item, (list, tuple)) and len(item) >= 2:
+                            # Assume format is [start, end, ...] or (start, end, ...)
+                            adjusted_item = list(item)
+                            adjusted_item[0] = item[0] + offset
+                            adjusted_item[1] = item[1] + offset
+                            adjusted.append(adjusted_item)
+                        elif isinstance(item, dict):
+                            # Handle dict format with 'start' and 'end' keys
+                            adjusted_item = item.copy()
+                            if 'start' in adjusted_item:
+                                adjusted_item['start'] += offset
+                            if 'end' in adjusted_item:
+                                adjusted_item['end'] += offset
+                            adjusted.append(adjusted_item)
+                        else:
+                            adjusted.append(item)
+                    merged[k].extend(adjusted)
+                else:
+                    merged[k].extend(v)
 
     merged_text = " ".join(texts).strip()
     timestamps  = dict(merged) if include_timestamps else None
