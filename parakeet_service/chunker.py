@@ -30,7 +30,7 @@ MAX_SEC            = 70          # never exceed this in one chunk
 TRAIL_SIL_MS       = 300         # keep ≥300 ms silence at cut point
 THRESH             = 0.60        # stricter prob threshold
 
-def vad_chunk_lowmem(path: pathlib.Path) -> List[pathlib.Path]:
+def vad_chunk_lowmem(path: pathlib.Path) -> List[tuple[pathlib.Path, float]]:
     """Low-memory VAD chunking for non-streaming processing"""
     import librosa
     
@@ -50,16 +50,18 @@ def vad_chunk_lowmem(path: pathlib.Path) -> List[pathlib.Path]:
     
     # Buffer for current chunk
     current_chunk = bytearray()
+    current_offset = 0.0
     chunks = []
     speech_ms = 0
     
     # Process audio in chunks
     for chunk_start in range(0, int(duration * SAMPLE_RATE), STRIPE_FRAMES):
+        current_offset = chunk_start / SAMPLE_RATE
         # Load audio segment with librosa for format conversion
         y, _ = librosa.load(
             path, 
             sr=SAMPLE_RATE, 
-            offset=chunk_start/SAMPLE_RATE,
+            offset=current_offset,
             duration=STRIPE_SEC,
             mono=True
         )
@@ -84,13 +86,13 @@ def vad_chunk_lowmem(path: pathlib.Path) -> List[pathlib.Path]:
             # Check if we should finalize chunk
             if (evt and evt.get("end")) or speech_ms >= MAX_CHUNK_MS:
                 if current_chunk:
-                    chunks.append(_flush(current_chunk))
+                    chunks.append((_flush(current_chunk), current_offset))
                     current_chunk.clear()
                     speech_ms = 0
     
     # Finalize last chunk
     if current_chunk:
-        chunks.append(_flush(current_chunk))
+        chunks.append((_flush(current_chunk), current_offset))
     
     return chunks
 
