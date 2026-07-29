@@ -1,0 +1,27 @@
+name: Build NPC Spawn Bundle
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build embedded source bundle
+        run: python tools/build_npc_spawn_bundle.py
+      - name: Verify archive and report
+        run: |
+          unzip -t runescape_npc_spawns_near_634_v2.zip
+          cat npc-spawn-bundle-v2/build/coverage_report.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runescape_npc_spawns_near_634_v2
+          path: runescape_npc_spawns_near_634_v2.zip
+          if-no-files-found: error
+          retention-days: 7
