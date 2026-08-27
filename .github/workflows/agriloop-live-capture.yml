@@ -1,0 +1,342 @@
+name: AgriLoop live capture
+
+on:
+  push:
+    branches:
+      - automation/agriloop-live-capture-20260827
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Playwright
+        run: |
+          npm init -y
+          npm install --no-audit --no-fund playwright@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Capture AgriLoop public site
+        shell: bash
+        run: |
+          cat > /tmp/capture-agriloop.mjs <<'EOF'
+          import { chromium } from 'playwright';
+          import fs from 'node:fs/promises';
+          import path from 'node:path';
+          import crypto from 'node:crypto';
+
+          const outputRoot = path.resolve('capture-output');
+          const segmentDir = path.join(outputRoot, 'segments-1920x1080');
+          const fullDir = path.join(outputRoot, 'full-page');
+          const stateDir = path.join(outputRoot, 'interaction-states');
+          const dataDir = path.join(outputRoot, 'page-data');
+
+          await fs.rm(outputRoot, { recursive: true, force: true });
+          for (const dir of [outputRoot, segmentDir, fullDir, stateDir, dataDir]) {
+            await fs.mkdir(dir, { recursive: true });
+          }
+
+          const requestedRoutes = [
+            { slug: 'home', url: 'https://agriloop.com.au/' },
+            { slug: 'launch-buyers', url: 'https://agriloop.com.au/launch/buyers' },
+            { slug: 'launch-producers', url: 'https://agriloop.com.au/launch/growers' },
+            { slug: 'launch-drivers', url: 'https://agriloop.com.au/launch/drivers' },
+            { slug: 'how-it-works', url: 'https://agriloop.com.au/how-it-works' },
+            { slug: 'about', url: 'https://agriloop.com.au/about' }
+          ];
+
+          const manifest = {
+            capturedAtUtc: new Date().toISOString(),
+            origin: 'https://agriloop.com.au',
+            requestedViewport: { width: 1920, height: 1080, aspectRatio: '16:9', deviceScaleFactor: 1 },
+            overlapPixels: 180,
+            routes: [],
+            discoveredInternalPaths: []
+          };
+
+          const browser = await chromium.launch({
+            headless: true,
+            args: ['--disable-dev-shm-usage', '--font-render-hinting=none']
+          });
+          const context = await browser.newContext({
+            viewport: { width: 1920, height: 1080 },
+            deviceScaleFactor: 1,
+            colorScheme: 'light',
+            locale: 'en-AU',
+            reducedMotion: 'reduce'
+          });
+
+          async function sha256(filePath) {
+            const bytes = await fs.readFile(filePath);
+            return crypto.createHash('sha256').update(bytes).digest('hex');
+          }
+
+          function uniqueSorted(numbers) {
+            return [...new Set(numbers.map((value) => Math.max(0, Math.round(value))))].sort((a, b) => a - b);
+          }
+
+          for (const route of requestedRoutes) {
+            const page = await context.newPage();
+            console.log(`Capturing ${route.slug}: ${route.url}`);
+
+            let response = null;
+            let navigationError = null;
+            try {
+              response = await page.goto(route.url, { waitUntil: 'domcontentloaded', timeout: 90000 });
+            } catch (error) {
+              navigationError = String(error);
+            }
+
+            await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+            await page.evaluate(async () => {
+              if (document.fonts?.ready) await document.fonts.ready;
+              window.scrollTo(0, 0);
+            }).catch(() => {});
+            await page.waitForTimeout(1800);
+
+            const pageData = await page.evaluate(() => {
+              const styleSummary = (element) => {
+                if (!element) return null;
+                const computed = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return {
+                  tagName: element.tagName,
+                  text: (element.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 300),
+                  rect: {
+                    x: Math.round(rect.x * 10) / 10,
+                    y: Math.round(rect.y * 10) / 10,
+                    width: Math.round(rect.width * 10) / 10,
+                    height: Math.round(rect.height * 10) / 10
+                  },
+                  display: computed.display,
+                  position: computed.position,
+                  fontFamily: computed.fontFamily,
+                  fontSize: computed.fontSize,
+                  fontWeight: computed.fontWeight,
+                  lineHeight: computed.lineHeight,
+                  letterSpacing: computed.letterSpacing,
+                  color: computed.color,
+                  backgroundColor: computed.backgroundColor,
+                  border: computed.border,
+                  borderRadius: computed.borderRadius,
+                  boxShadow: computed.boxShadow,
+                  padding: computed.padding,
+                  margin: computed.margin,
+                  gap: computed.gap
+                };
+              };
+
+              const rootStyle = getComputedStyle(document.documentElement);
+              const cssVariables = {};
+              for (let index = 0; index < rootStyle.length; index += 1) {
+                const name = rootStyle[index];
+                if (name?.startsWith('--')) {
+                  const value = rootStyle.getPropertyValue(name).trim();
+                  if (value) cssVariables[name] = value;
+                }
+              }
+
+              const controls = [...document.querySelectorAll('a, button, input, select, textarea')]
+                .slice(0, 200)
+                .map((element) => {
+                  const rect = element.getBoundingClientRect();
+                  const computed = getComputedStyle(element);
+                  return {
+                    tagName: element.tagName,
+                    type: element.getAttribute('type'),
+                    text: (element.textContent || element.getAttribute('aria-label') || element.getAttribute('placeholder') || '')
+                      .replace(/\s+/g, ' ')
+                      .trim()
+                      .slice(0, 160),
+                    href: element instanceof HTMLAnchorElement ? element.href : null,
+                    name: element.getAttribute('name'),
+                    ariaLabel: element.getAttribute('aria-label'),
+                    rect: { width: Math.round(rect.width), height: Math.round(rect.height) },
+                    fontSize: computed.fontSize,
+                    borderRadius: computed.borderRadius,
+                    color: computed.color,
+                    backgroundColor: computed.backgroundColor,
+                    border: computed.border
+                  };
+                });
+
+              const internalPaths = [...document.querySelectorAll('a[href]')]
+                .map((anchor) => {
+                  try {
+                    const url = new URL(anchor.href, location.href);
+                    return url.origin === location.origin ? url.pathname : null;
+                  } catch {
+                    return null;
+                  }
+                })
+                .filter(Boolean);
+
+              return {
+                url: location.href,
+                title: document.title,
+                language: document.documentElement.lang,
+                viewport: { width: innerWidth, height: innerHeight, devicePixelRatio },
+                document: {
+                  scrollWidth: document.documentElement.scrollWidth,
+                  scrollHeight: document.documentElement.scrollHeight,
+                  bodyScrollHeight: document.body.scrollHeight
+                },
+                body: styleSummary(document.body),
+                header: styleSummary(document.querySelector('header')),
+                main: styleSummary(document.querySelector('main')),
+                h1: styleSummary(document.querySelector('h1')),
+                h2: styleSummary(document.querySelector('h2')),
+                nav: styleSummary(document.querySelector('nav')),
+                headings: [...document.querySelectorAll('h1, h2, h3, h4')].map((heading) => ({
+                  level: Number(heading.tagName.slice(1)),
+                  text: (heading.textContent || '').replace(/\s+/g, ' ').trim(),
+                  style: styleSummary(heading)
+                })),
+                sections: [...document.querySelectorAll('main section')].map((section, index) => ({
+                  index,
+                  ariaLabel: section.getAttribute('aria-label'),
+                  id: section.id,
+                  style: styleSummary(section),
+                  firstHeading: (section.querySelector('h1, h2, h3')?.textContent || '').replace(/\s+/g, ' ').trim()
+                })),
+                images: [...document.images].map((image) => ({
+                  src: image.currentSrc || image.src,
+                  alt: image.alt,
+                  naturalWidth: image.naturalWidth,
+                  naturalHeight: image.naturalHeight,
+                  renderedWidth: Math.round(image.getBoundingClientRect().width),
+                  renderedHeight: Math.round(image.getBoundingClientRect().height),
+                  loading: image.loading
+                })),
+                links: [...document.querySelectorAll('a[href]')].map((anchor) => ({
+                  text: (anchor.textContent || '').replace(/\s+/g, ' ').trim(),
+                  href: anchor.href
+                })),
+                controls,
+                forms: [...document.forms].map((form, index) => ({
+                  index,
+                  action: form.action,
+                  method: form.method,
+                  fieldCount: form.elements.length,
+                  labels: [...form.querySelectorAll('label')].map((label) => (label.textContent || '').replace(/\s+/g, ' ').trim())
+                })),
+                landmarks: {
+                  headers: document.querySelectorAll('header').length,
+                  navs: document.querySelectorAll('nav').length,
+                  mains: document.querySelectorAll('main').length,
+                  footers: document.querySelectorAll('footer').length
+                },
+                cssVariables,
+                internalPaths: [...new Set(internalPaths)].sort()
+              };
+            });
+
+            for (const internalPath of pageData.internalPaths) {
+              if (!manifest.discoveredInternalPaths.includes(internalPath)) manifest.discoveredInternalPaths.push(internalPath);
+            }
+
+            const fullPath = path.join(fullDir, `${route.slug}-full.png`);
+            await page.screenshot({ path: fullPath, fullPage: true, animations: 'disabled' });
+
+            const viewportHeight = pageData.viewport.height;
+            const documentHeight = Math.max(pageData.document.scrollHeight, viewportHeight);
+            const maxScroll = Math.max(0, documentHeight - viewportHeight);
+            const step = viewportHeight - manifest.overlapPixels;
+            const positions = [];
+            for (let top = 0; top < maxScroll; top += step) positions.push(top);
+            positions.push(maxScroll);
+
+            const screenshots = [];
+            for (const [index, top] of uniqueSorted(positions).entries()) {
+              await page.evaluate((scrollTop) => window.scrollTo({ top: scrollTop, behavior: 'instant' }), top);
+              await page.waitForTimeout(500);
+              const actualTop = await page.evaluate(() => Math.round(window.scrollY));
+              const fileName = `${route.slug}-${String(index + 1).padStart(2, '0')}-y${String(actualTop).padStart(4, '0')}.png`;
+              const filePath = path.join(segmentDir, fileName);
+              await page.screenshot({ path: filePath, fullPage: false, animations: 'disabled' });
+              screenshots.push({ fileName, requestedTop: top, actualTop, sha256: await sha256(filePath) });
+            }
+
+            const states = [];
+            if (route.slug === 'how-it-works') {
+              const question = page.getByText('Who can join AgriLoop?', { exact: true }).first();
+              if (await question.count()) {
+                await question.click().catch(() => {});
+                await page.waitForTimeout(500);
+                const box = await question.boundingBox();
+                if (box) {
+                  const top = Math.max(0, box.y + (await page.evaluate(() => window.scrollY)) - 240);
+                  await page.evaluate((scrollTop) => window.scrollTo({ top: scrollTop, behavior: 'instant' }), top);
+                  await page.waitForTimeout(500);
+                }
+                const fileName = 'how-it-works-faq-expanded-1920x1080.png';
+                const filePath = path.join(stateDir, fileName);
+                await page.screenshot({ path: filePath, fullPage: false, animations: 'disabled' });
+                states.push({ fileName, sha256: await sha256(filePath) });
+              }
+            }
+
+            const dataPath = path.join(dataDir, `${route.slug}.json`);
+            await fs.writeFile(dataPath, JSON.stringify(pageData, null, 2));
+
+            manifest.routes.push({
+              slug: route.slug,
+              requestedUrl: route.url,
+              finalUrl: pageData.url,
+              httpStatus: response?.status() ?? null,
+              navigationError,
+              title: pageData.title,
+              viewport: pageData.viewport,
+              document: pageData.document,
+              fullPage: { fileName: path.basename(fullPath), sha256: await sha256(fullPath) },
+              screenshots,
+              states,
+              dataFile: path.basename(dataPath)
+            });
+
+            await page.close();
+          }
+
+          manifest.discoveredInternalPaths.sort();
+          await fs.writeFile(path.join(outputRoot, 'manifest.json'), JSON.stringify(manifest, null, 2));
+          await fs.writeFile(
+            path.join(outputRoot, 'README.txt'),
+            [
+              'AgriLoop live public-site capture',
+              `Captured UTC: ${manifest.capturedAtUtc}`,
+              'Viewport: 1920 x 1080 CSS pixels, DPR 1, exact 16:9',
+              'Segment overlap: 180 pixels',
+              '',
+              'segments-1920x1080/: sequential viewport screenshots covering each page',
+              'full-page/: full-document PNGs for reference',
+              'interaction-states/: additional visible component states',
+              'page-data/: live DOM, geometry, computed-style and asset inventories',
+              'manifest.json: routes, dimensions, hashes and screenshot order'
+            ].join('\n')
+          );
+
+          await browser.close();
+          console.log(JSON.stringify(manifest, null, 2));
+          EOF
+
+          node /tmp/capture-agriloop.mjs
+
+      - name: Upload capture package
+        uses: actions/upload-artifact@v4
+        with:
+          name: agriloop-live-capture-1920x1080
+          path: capture-output
+          if-no-files-found: error
+          retention-days: 7
