@@ -31,157 +31,130 @@ jobs:
       - name: Capture AgriLoop public site
         shell: bash
         run: |
-          cat > /tmp/capture-agriloop.mjs <<'EOF'
+          cat > capture-agriloop.mjs <<'EOF'
           import { chromium } from 'playwright';
           import fs from 'node:fs/promises';
           import path from 'node:path';
           import crypto from 'node:crypto';
 
-          const outputRoot = path.resolve('capture-output');
-          const segmentDir = path.join(outputRoot, 'segments-1920x1080');
-          const fullDir = path.join(outputRoot, 'full-page');
-          const stateDir = path.join(outputRoot, 'interaction-states');
-          const dataDir = path.join(outputRoot, 'page-data');
+          const ROOT = path.resolve('capture-output');
+          const SEGMENTS = path.join(ROOT, 'segments-1920x1080');
+          const FULL = path.join(ROOT, 'full-page');
+          const STATES = path.join(ROOT, 'interaction-states');
+          const DATA = path.join(ROOT, 'page-data');
+          const HTML = path.join(ROOT, 'html-snapshots');
+          const VIEWPORT = { width: 1920, height: 1080 };
+          const OVERLAP = 180;
+          const STEP = VIEWPORT.height - OVERLAP;
 
-          await fs.rm(outputRoot, { recursive: true, force: true });
-          for (const dir of [outputRoot, segmentDir, fullDir, stateDir, dataDir]) {
+          await fs.rm(ROOT, { recursive: true, force: true });
+          for (const dir of [ROOT, SEGMENTS, FULL, STATES, DATA, HTML]) {
             await fs.mkdir(dir, { recursive: true });
           }
 
-          const requestedRoutes = [
-            { slug: 'home', url: 'https://agriloop.com.au/' },
-            { slug: 'launch-buyers', url: 'https://agriloop.com.au/launch/buyers' },
-            { slug: 'launch-producers', url: 'https://agriloop.com.au/launch/growers' },
-            { slug: 'launch-drivers', url: 'https://agriloop.com.au/launch/drivers' },
-            { slug: 'how-it-works', url: 'https://agriloop.com.au/how-it-works' },
-            { slug: 'about', url: 'https://agriloop.com.au/about' }
+          const seedRoutes = [
+            ['home', 'https://agriloop.com.au/'],
+            ['launch-buyers', 'https://agriloop.com.au/launch/buyers'],
+            ['launch-producers', 'https://agriloop.com.au/launch/growers'],
+            ['launch-drivers', 'https://agriloop.com.au/launch/drivers'],
+            ['how-it-works', 'https://agriloop.com.au/how-it-works'],
+            ['about', 'https://agriloop.com.au/about']
           ];
 
           const manifest = {
             capturedAtUtc: new Date().toISOString(),
             origin: 'https://agriloop.com.au',
-            requestedViewport: { width: 1920, height: 1080, aspectRatio: '16:9', deviceScaleFactor: 1 },
-            overlapPixels: 180,
+            viewport: { ...VIEWPORT, deviceScaleFactor: 1, aspectRatio: '16:9' },
+            overlapPixels: OVERLAP,
             routes: [],
             discoveredInternalPaths: []
           };
+
+          const hash = async (file) => crypto.createHash('sha256').update(await fs.readFile(file)).digest('hex');
+          const safeSlug = (value) => value.replace(/^\/+|\/+$/g, '').replace(/[^a-z0-9]+/gi, '-').toLowerCase() || 'home';
+          const uniqueNumbers = (values) => [...new Set(values.map((n) => Math.max(0, Math.round(n))))].sort((a, b) => a - b);
 
           const browser = await chromium.launch({
             headless: true,
             args: ['--disable-dev-shm-usage', '--font-render-hinting=none']
           });
           const context = await browser.newContext({
-            viewport: { width: 1920, height: 1080 },
+            viewport: VIEWPORT,
             deviceScaleFactor: 1,
             colorScheme: 'light',
             locale: 'en-AU',
             reducedMotion: 'reduce'
           });
 
-          async function sha256(filePath) {
-            const bytes = await fs.readFile(filePath);
-            return crypto.createHash('sha256').update(bytes).digest('hex');
-          }
-
-          function uniqueSorted(numbers) {
-            return [...new Set(numbers.map((value) => Math.max(0, Math.round(value))))].sort((a, b) => a - b);
-          }
-
-          for (const route of requestedRoutes) {
-            const page = await context.newPage();
-            console.log(`Capturing ${route.slug}: ${route.url}`);
-
-            let response = null;
-            let navigationError = null;
-            try {
-              response = await page.goto(route.url, { waitUntil: 'domcontentloaded', timeout: 90000 });
-            } catch (error) {
-              navigationError = String(error);
-            }
-
+          async function settle(page) {
             await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
             await page.evaluate(async () => {
               if (document.fonts?.ready) await document.fonts.ready;
-              window.scrollTo(0, 0);
             }).catch(() => {});
-            await page.waitForTimeout(1800);
+            const initialHeight = await page.evaluate(() => Math.max(document.documentElement.scrollHeight, document.body.scrollHeight));
+            for (let y = 0; y < initialHeight; y += 600) {
+              await page.evaluate((top) => window.scrollTo(0, top), y);
+              await page.waitForTimeout(100);
+            }
+            await page.evaluate(() => window.scrollTo(0, 0));
+            await page.waitForTimeout(1200);
+            await page.addStyleTag({ content: '*,*::before,*::after{animation-duration:0s!important;animation-delay:0s!important;transition:none!important;scroll-behavior:auto!important}' }).catch(() => {});
+          }
 
-            const pageData = await page.evaluate(() => {
-              const styleSummary = (element) => {
-                if (!element) return null;
-                const computed = getComputedStyle(element);
-                const rect = element.getBoundingClientRect();
+          async function collectPageData(page) {
+            return page.evaluate(() => {
+              const round = (n) => Math.round(n * 10) / 10;
+              const style = (el) => {
+                if (!el) return null;
+                const cs = getComputedStyle(el);
+                const r = el.getBoundingClientRect();
                 return {
-                  tagName: element.tagName,
-                  text: (element.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 300),
-                  rect: {
-                    x: Math.round(rect.x * 10) / 10,
-                    y: Math.round(rect.y * 10) / 10,
-                    width: Math.round(rect.width * 10) / 10,
-                    height: Math.round(rect.height * 10) / 10
-                  },
-                  display: computed.display,
-                  position: computed.position,
-                  fontFamily: computed.fontFamily,
-                  fontSize: computed.fontSize,
-                  fontWeight: computed.fontWeight,
-                  lineHeight: computed.lineHeight,
-                  letterSpacing: computed.letterSpacing,
-                  color: computed.color,
-                  backgroundColor: computed.backgroundColor,
-                  border: computed.border,
-                  borderRadius: computed.borderRadius,
-                  boxShadow: computed.boxShadow,
-                  padding: computed.padding,
-                  margin: computed.margin,
-                  gap: computed.gap
+                  tag: el.tagName.toLowerCase(),
+                  id: el.id || null,
+                  className: typeof el.className === 'string' ? el.className : null,
+                  text: (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 280),
+                  rect: { x: round(r.x), y: round(r.y + scrollY), width: round(r.width), height: round(r.height) },
+                  display: cs.display,
+                  position: cs.position,
+                  gridTemplateColumns: cs.gridTemplateColumns,
+                  gap: cs.gap,
+                  padding: cs.padding,
+                  margin: cs.margin,
+                  fontFamily: cs.fontFamily,
+                  fontSize: cs.fontSize,
+                  fontWeight: cs.fontWeight,
+                  lineHeight: cs.lineHeight,
+                  letterSpacing: cs.letterSpacing,
+                  color: cs.color,
+                  backgroundColor: cs.backgroundColor,
+                  backgroundImage: cs.backgroundImage,
+                  border: cs.border,
+                  borderRadius: cs.borderRadius,
+                  boxShadow: cs.boxShadow,
+                  opacity: cs.opacity
                 };
               };
 
               const rootStyle = getComputedStyle(document.documentElement);
               const cssVariables = {};
-              for (let index = 0; index < rootStyle.length; index += 1) {
-                const name = rootStyle[index];
+              for (let i = 0; i < rootStyle.length; i += 1) {
+                const name = rootStyle[i];
                 if (name?.startsWith('--')) {
                   const value = rootStyle.getPropertyValue(name).trim();
                   if (value) cssVariables[name] = value;
                 }
               }
 
-              const controls = [...document.querySelectorAll('a, button, input, select, textarea')]
-                .slice(0, 200)
-                .map((element) => {
-                  const rect = element.getBoundingClientRect();
-                  const computed = getComputedStyle(element);
-                  return {
-                    tagName: element.tagName,
-                    type: element.getAttribute('type'),
-                    text: (element.textContent || element.getAttribute('aria-label') || element.getAttribute('placeholder') || '')
-                      .replace(/\s+/g, ' ')
-                      .trim()
-                      .slice(0, 160),
-                    href: element instanceof HTMLAnchorElement ? element.href : null,
-                    name: element.getAttribute('name'),
-                    ariaLabel: element.getAttribute('aria-label'),
-                    rect: { width: Math.round(rect.width), height: Math.round(rect.height) },
-                    fontSize: computed.fontSize,
-                    borderRadius: computed.borderRadius,
-                    color: computed.color,
-                    backgroundColor: computed.backgroundColor,
-                    border: computed.border
-                  };
-                });
+              const internalPaths = [...document.querySelectorAll('a[href]')].map((a) => {
+                try {
+                  const u = new URL(a.href, location.href);
+                  return u.origin === location.origin ? u.pathname : null;
+                } catch { return null; }
+              }).filter(Boolean);
 
-              const internalPaths = [...document.querySelectorAll('a[href]')]
-                .map((anchor) => {
-                  try {
-                    const url = new URL(anchor.href, location.href);
-                    return url.origin === location.origin ? url.pathname : null;
-                  } catch {
-                    return null;
-                  }
-                })
-                .filter(Boolean);
+              const elements = [...document.querySelectorAll('header,nav,main,section,article,aside,footer,h1,h2,h3,h4,p,ul,ol,li,a,button,label,input,select,textarea,form,img,figure')]
+                .slice(0, 700)
+                .map(style);
 
               return {
                 url: location.href,
@@ -190,41 +163,24 @@ jobs:
                 viewport: { width: innerWidth, height: innerHeight, devicePixelRatio },
                 document: {
                   scrollWidth: document.documentElement.scrollWidth,
-                  scrollHeight: document.documentElement.scrollHeight,
-                  bodyScrollHeight: document.body.scrollHeight
+                  scrollHeight: Math.max(document.documentElement.scrollHeight, document.body.scrollHeight)
                 },
-                body: styleSummary(document.body),
-                header: styleSummary(document.querySelector('header')),
-                main: styleSummary(document.querySelector('main')),
-                h1: styleSummary(document.querySelector('h1')),
-                h2: styleSummary(document.querySelector('h2')),
-                nav: styleSummary(document.querySelector('nav')),
-                headings: [...document.querySelectorAll('h1, h2, h3, h4')].map((heading) => ({
-                  level: Number(heading.tagName.slice(1)),
-                  text: (heading.textContent || '').replace(/\s+/g, ' ').trim(),
-                  style: styleSummary(heading)
+                landmarks: {
+                  header: document.querySelectorAll('header').length,
+                  nav: document.querySelectorAll('nav').length,
+                  main: document.querySelectorAll('main').length,
+                  footer: document.querySelectorAll('footer').length
+                },
+                headings: [...document.querySelectorAll('h1,h2,h3,h4')].map((el) => ({ level: Number(el.tagName.slice(1)), ...style(el) })),
+                sections: [...document.querySelectorAll('main section')].map((el, index) => ({ index, ...style(el) })),
+                controls: [...document.querySelectorAll('a,button,input,select,textarea')].map((el) => ({
+                  ...style(el),
+                  type: el.getAttribute('type'),
+                  name: el.getAttribute('name'),
+                  href: el instanceof HTMLAnchorElement ? el.href : null,
+                  ariaLabel: el.getAttribute('aria-label'),
+                  placeholder: el.getAttribute('placeholder')
                 })),
-                sections: [...document.querySelectorAll('main section')].map((section, index) => ({
-                  index,
-                  ariaLabel: section.getAttribute('aria-label'),
-                  id: section.id,
-                  style: styleSummary(section),
-                  firstHeading: (section.querySelector('h1, h2, h3')?.textContent || '').replace(/\s+/g, ' ').trim()
-                })),
-                images: [...document.images].map((image) => ({
-                  src: image.currentSrc || image.src,
-                  alt: image.alt,
-                  naturalWidth: image.naturalWidth,
-                  naturalHeight: image.naturalHeight,
-                  renderedWidth: Math.round(image.getBoundingClientRect().width),
-                  renderedHeight: Math.round(image.getBoundingClientRect().height),
-                  loading: image.loading
-                })),
-                links: [...document.querySelectorAll('a[href]')].map((anchor) => ({
-                  text: (anchor.textContent || '').replace(/\s+/g, ' ').trim(),
-                  href: anchor.href
-                })),
-                controls,
                 forms: [...document.forms].map((form, index) => ({
                   index,
                   action: form.action,
@@ -232,108 +188,122 @@ jobs:
                   fieldCount: form.elements.length,
                   labels: [...form.querySelectorAll('label')].map((label) => (label.textContent || '').replace(/\s+/g, ' ').trim())
                 })),
-                landmarks: {
-                  headers: document.querySelectorAll('header').length,
-                  navs: document.querySelectorAll('nav').length,
-                  mains: document.querySelectorAll('main').length,
-                  footers: document.querySelectorAll('footer').length
-                },
+                images: [...document.images].map((img) => ({
+                  src: img.currentSrc || img.src,
+                  alt: img.alt,
+                  naturalWidth: img.naturalWidth,
+                  naturalHeight: img.naturalHeight,
+                  renderedWidth: round(img.getBoundingClientRect().width),
+                  renderedHeight: round(img.getBoundingClientRect().height),
+                  loading: img.loading
+                })),
+                resourceFonts: performance.getEntriesByType('resource').map((r) => r.name).filter((name) => /\.(woff2?|ttf|otf)(\?|$)/i.test(name)),
                 cssVariables,
-                internalPaths: [...new Set(internalPaths)].sort()
+                internalPaths: [...new Set(internalPaths)].sort(),
+                elements
               };
             });
+          }
 
-            for (const internalPath of pageData.internalPaths) {
-              if (!manifest.discoveredInternalPaths.includes(internalPath)) manifest.discoveredInternalPaths.push(internalPath);
+          for (const [requestedSlug, requestedUrl] of seedRoutes) {
+            const page = await context.newPage();
+            console.log(`Capturing ${requestedSlug}: ${requestedUrl}`);
+            let response = null;
+            let navigationError = null;
+            try {
+              response = await page.goto(requestedUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
+            } catch (error) {
+              navigationError = String(error);
             }
 
-            const fullPath = path.join(fullDir, `${route.slug}-full.png`);
-            await page.screenshot({ path: fullPath, fullPage: true, animations: 'disabled' });
+            await settle(page);
+            const pageData = await collectPageData(page);
+            for (const item of pageData.internalPaths) {
+              if (!manifest.discoveredInternalPaths.includes(item)) manifest.discoveredInternalPaths.push(item);
+            }
 
-            const viewportHeight = pageData.viewport.height;
-            const documentHeight = Math.max(pageData.document.scrollHeight, viewportHeight);
-            const maxScroll = Math.max(0, documentHeight - viewportHeight);
-            const step = viewportHeight - manifest.overlapPixels;
+            const slug = requestedSlug || safeSlug(new URL(pageData.url).pathname);
+            const dataFile = path.join(DATA, `${slug}.json`);
+            const htmlFile = path.join(HTML, `${slug}.html`);
+            await fs.writeFile(dataFile, JSON.stringify(pageData, null, 2));
+            await fs.writeFile(htmlFile, await page.content());
+
+            const fullFile = path.join(FULL, `${slug}-full.png`);
+            await page.screenshot({ path: fullFile, fullPage: true, animations: 'disabled' });
+
+            const height = Math.max(pageData.document.scrollHeight, VIEWPORT.height);
+            const maxScroll = Math.max(0, height - VIEWPORT.height);
             const positions = [];
-            for (let top = 0; top < maxScroll; top += step) positions.push(top);
+            for (let top = 0; top < maxScroll; top += STEP) positions.push(top);
             positions.push(maxScroll);
 
             const screenshots = [];
-            for (const [index, top] of uniqueSorted(positions).entries()) {
-              await page.evaluate((scrollTop) => window.scrollTo({ top: scrollTop, behavior: 'instant' }), top);
-              await page.waitForTimeout(500);
-              const actualTop = await page.evaluate(() => Math.round(window.scrollY));
-              const fileName = `${route.slug}-${String(index + 1).padStart(2, '0')}-y${String(actualTop).padStart(4, '0')}.png`;
-              const filePath = path.join(segmentDir, fileName);
+            for (const [index, top] of uniqueNumbers(positions).entries()) {
+              await page.evaluate((y) => window.scrollTo(0, y), top);
+              await page.waitForTimeout(400);
+              const actualTop = await page.evaluate(() => Math.round(scrollY));
+              const fileName = `${slug}-${String(index + 1).padStart(2, '0')}-y${String(actualTop).padStart(4, '0')}.png`;
+              const filePath = path.join(SEGMENTS, fileName);
               await page.screenshot({ path: filePath, fullPage: false, animations: 'disabled' });
-              screenshots.push({ fileName, requestedTop: top, actualTop, sha256: await sha256(filePath) });
+              screenshots.push({ fileName, requestedTop: top, actualTop, sha256: await hash(filePath) });
             }
 
             const states = [];
-            if (route.slug === 'how-it-works') {
-              const question = page.getByText('Who can join AgriLoop?', { exact: true }).first();
-              if (await question.count()) {
-                await question.click().catch(() => {});
-                await page.waitForTimeout(500);
-                const box = await question.boundingBox();
-                if (box) {
-                  const top = Math.max(0, box.y + (await page.evaluate(() => window.scrollY)) - 240);
-                  await page.evaluate((scrollTop) => window.scrollTo({ top: scrollTop, behavior: 'instant' }), top);
-                  await page.waitForTimeout(500);
-                }
+            if (slug === 'how-it-works') {
+              const faq = page.getByText('Who can join AgriLoop?', { exact: true }).first();
+              if (await faq.count()) {
+                await faq.scrollIntoViewIfNeeded().catch(() => {});
+                await faq.click().catch(() => {});
+                await page.waitForTimeout(600);
                 const fileName = 'how-it-works-faq-expanded-1920x1080.png';
-                const filePath = path.join(stateDir, fileName);
+                const filePath = path.join(STATES, fileName);
                 await page.screenshot({ path: filePath, fullPage: false, animations: 'disabled' });
-                states.push({ fileName, sha256: await sha256(filePath) });
+                states.push({ fileName, sha256: await hash(filePath) });
               }
             }
 
-            const dataPath = path.join(dataDir, `${route.slug}.json`);
-            await fs.writeFile(dataPath, JSON.stringify(pageData, null, 2));
-
             manifest.routes.push({
-              slug: route.slug,
-              requestedUrl: route.url,
+              slug,
+              requestedUrl,
               finalUrl: pageData.url,
               httpStatus: response?.status() ?? null,
               navigationError,
               title: pageData.title,
               viewport: pageData.viewport,
               document: pageData.document,
-              fullPage: { fileName: path.basename(fullPath), sha256: await sha256(fullPath) },
+              fullPage: { fileName: path.basename(fullFile), sha256: await hash(fullFile) },
               screenshots,
               states,
-              dataFile: path.basename(dataPath)
+              dataFile: path.basename(dataFile),
+              htmlFile: path.basename(htmlFile)
             });
-
             await page.close();
           }
 
           manifest.discoveredInternalPaths.sort();
-          await fs.writeFile(path.join(outputRoot, 'manifest.json'), JSON.stringify(manifest, null, 2));
-          await fs.writeFile(
-            path.join(outputRoot, 'README.txt'),
-            [
-              'AgriLoop live public-site capture',
-              `Captured UTC: ${manifest.capturedAtUtc}`,
-              'Viewport: 1920 x 1080 CSS pixels, DPR 1, exact 16:9',
-              'Segment overlap: 180 pixels',
-              '',
-              'segments-1920x1080/: sequential viewport screenshots covering each page',
-              'full-page/: full-document PNGs for reference',
-              'interaction-states/: additional visible component states',
-              'page-data/: live DOM, geometry, computed-style and asset inventories',
-              'manifest.json: routes, dimensions, hashes and screenshot order'
-            ].join('\n')
-          );
+          await fs.writeFile(path.join(ROOT, 'manifest.json'), JSON.stringify(manifest, null, 2));
+          await fs.writeFile(path.join(ROOT, 'README.txt'), [
+            'AgriLoop live public-site capture',
+            `Captured UTC: ${manifest.capturedAtUtc}`,
+            'Viewport: 1920 x 1080 CSS pixels, DPR 1, exact 16:9',
+            `Segment overlap: ${OVERLAP} pixels`,
+            '',
+            'segments-1920x1080/: sequential viewport screenshots covering every captured page',
+            'full-page/: full-document PNGs',
+            'interaction-states/: additional visible component states',
+            'page-data/: live DOM geometry, computed-style, asset, form and route inventories',
+            'html-snapshots/: rendered HTML at capture time',
+            'manifest.json: route status, dimensions, hashes and screenshot order'
+          ].join('\n'));
 
-          await browser.close();
           console.log(JSON.stringify(manifest, null, 2));
+          await browser.close();
           EOF
 
-          node /tmp/capture-agriloop.mjs
+          node capture-agriloop.mjs
 
       - name: Upload capture package
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: agriloop-live-capture-1920x1080
